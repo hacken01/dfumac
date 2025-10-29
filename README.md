@@ -34,7 +34,7 @@ Thanks to t8012.dev and mrarm for assistance with the VDM and Ace2 host interfac
 
 2. **Clone or download this repository:**
    ```bash
-   git clone <repository-url>
+   git clone <https://github.com/hacken01/dfumac.git>
    cd dfumac
    ```
 
