@@ -3,7 +3,9 @@ LDFLAGS := -framework CoreFoundation -framework IOKit -lc++
 
 OBJS := main.o
 
-all: macvdmtool
+all: dfumac
 
-macvdmtool: $(OBJS)
+dfumac: $(OBJS)
 	cc -o $@ $(OBJS) $(LDFLAGS)
+clean:
+	rm -f $(OBJS) dfumac
