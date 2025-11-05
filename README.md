@@ -34,7 +34,7 @@ Thanks to t8012.dev and mrarm for assistance with the VDM and Ace2 host interfac
 
 2. **Clone or download this repository:**
    ```bash
-   git clone <https://github.com/hacken01/dfumac.git>
+   git clone https://github.com/hacken01/dfumac.git
    cd dfumac
    ```
 
@@ -68,6 +68,9 @@ Run the program as root:
 ```bash
 sudo ./dfumac
 ```
+### Adding the program to the path
+To add the program to the path you can go to the folder usr/local/bin and add the executable there
+you will be able to run the program now from any directory since the terminal can recognize it now. 
 
 The tool will:
 1. Automatically detect connected HPM (High Power Management) devices
