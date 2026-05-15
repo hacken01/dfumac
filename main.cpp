@@ -77,6 +77,7 @@ struct HPMPluginInstance {
         IOReturn x = (*device)->Read(device, chipAddr, dataAddr, &ret[0], 64, flags, &rlen);
         if (x != 0)
             throw failure("readRegister failed");
+        ret.resize(rlen); // trim to actual bytes read from device
         return ret;
     }
 
@@ -111,9 +112,9 @@ uint32_t GetUnlockKey()
     if (!matching)
         throw failure("IOServiceMatching failed (IOPED)");
 
+    // IOServiceGetMatchingService always consumes `matching` — do NOT CFRelease it afterward.
     io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, matching);
     if (!service) {
-        CFRelease(matching);
         throw failure("IOServiceGetMatchingService failed (IOPED)");
     }
 
@@ -126,7 +127,8 @@ uint32_t GetUnlockKey()
 
     printf("Mac type: %s\n", deviceName);
 
-    return (deviceName[0] << 24) | (deviceName[1] << 16) | (deviceName[2] << 8) | deviceName[3];
+    return ((uint8_t)deviceName[0] << 24) | ((uint8_t)deviceName[1] << 16) |
+           ((uint8_t)deviceName[2] << 8)  |  (uint8_t)deviceName[3];
 }
 
 std::vector<std::unique_ptr<HPMPluginInstance>> FindDevices()
@@ -137,16 +139,18 @@ std::vector<std::unique_ptr<HPMPluginInstance>> FindDevices()
 
     printf("Looking for HPM devices...\n");
 
-    CFMutableDictionaryRef matching = IOServiceMatching("AppleHPM");
-    if (!matching)
-        throw failure("IOServiceMatching failed");
-
     for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        // IOServiceGetMatchingServices consumes the dictionary, so recreate it each iteration.
+        CFMutableDictionaryRef matching = IOServiceMatching("AppleHPM");
+        if (!matching)
+            throw failure("IOServiceMatching failed");
+
         io_iterator_t iter = 0;
         if (IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iter) != kIOReturnSuccess) {
-            CFRelease(matching);
+            // matching already consumed by IOServiceGetMatchingServices — do NOT CFRelease it.
             throw failure("IOServiceGetMatchingServices failed");
         }
+        // matching has been consumed by IOServiceGetMatchingServices — do NOT CFRelease it.
 
         IOObjectDeleter iterDel(iter);
 
@@ -160,7 +164,7 @@ std::vector<std::unique_ptr<HPMPluginInstance>> FindDevices()
             }
 
             printf("Found: %s\n", pathName);
-            
+
             try {
                 auto instance = std::make_unique<HPMPluginInstance>(device);
 
@@ -180,15 +184,13 @@ std::vector<std::unique_ptr<HPMPluginInstance>> FindDevices()
         }
 
         if (!devices.empty()) {
-            CFRelease(matching);
             return devices;
         }
-        
+
         printf("No suitable device found, waiting before retry...\n");
         usleep(RETRY_DELAY_MS * 1000);
     }
 
-    CFRelease(matching);
     throw failure("No suitable devices found after multiple attempts.");
 }
 
@@ -282,7 +284,8 @@ int main2(int argc, char **argv)
 
                     // Check status and enter DBMa mode if needed
                     auto res = inst->readRegister(no, 0x03);
-                    res.erase(res.find('\0'));
+                    auto np = res.find('\0');
+                    if (np != std::string::npos) res.erase(np);
                     printf("Status: %s\n", res.c_str());
 
                     if (res != "DBMa") {
@@ -293,7 +296,8 @@ int main2(int argc, char **argv)
                             throw failure("Failed to enter DBMa mode");
 
                         res = inst->readRegister(no, 0x03);
-                        res.erase(res.find('\0'));
+                        auto np2 = res.find('\0');
+                        if (np2 != std::string::npos) res.erase(np2);
                         printf("Status: %s\n", res.c_str());
                         if (res != "DBMa")
                             throw failure("Failed to enter DBMa mode");
