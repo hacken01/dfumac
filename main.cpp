@@ -229,8 +229,9 @@ int main(int argc, char **argv)
         auto devices = FindDevices();
         int dfuCount = 0;
 
+        bool done = false;
         for (auto& inst : devices) {
-            for (int no = 0; no < 5; ++no) {
+            for (int no = 0; no < 4; ++no) {
                 try {
                     // Skip ports with no active connection
                     auto t = inst->readRegister(no, 0x3f);
@@ -257,14 +258,20 @@ int main(int argc, char **argv)
                     DoDFU(*inst, no);
                     printf("[Port %d] DFU triggered successfully.\n", no);
                     dfuCount++;
+                    done = true; // device is in DFU — no need to try remaining ports or chips
+                    break;
 
                 } catch (const failure& e) {
                     printf("[Port %d] Failed: %s\n", no, e.what());
                 }
             }
+            if (done) break;
         }
 
-        printf("\nDone: %d port(s) put into DFU mode.\n", dfuCount);
+        if (dfuCount > 0)
+            printf("\nDone: %d device(s) put into DFU mode.\n", dfuCount);
+        else
+            printf("\nNo devices were put into DFU mode.\n");
 
     } catch (const failure& e) {
         printf("Error: %s\n", e.what());
