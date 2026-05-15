@@ -53,13 +53,11 @@ struct HPMPluginInstance {
     ~HPMPluginInstance()
     {
         if (plugin) {
-            printf("Exiting DBMa mode... ");
-            if (device && this->command(0, 'DBMa', "\x00") == 0)
-                printf("OK\n");
-            else
-                printf("Failed\n");
-            // IODestroyPlugInInterface will release all interfaces obtained from the plugin
-            // This includes the device interface obtained via QueryInterface
+            // Silently exit DBMa mode; ignore errors during teardown.
+            if (device)
+                this->command(0, 'DBMa', "\x00");
+            // IODestroyPlugInInterface releases all interfaces obtained from the plugin,
+            // including the device interface obtained via QueryInterface.
             IODestroyPlugInInterface(plugin);
             plugin = nullptr;
             device = nullptr;
@@ -68,9 +66,9 @@ struct HPMPluginInstance {
 
     std::string readRegister(uint64_t chipAddr, uint8_t dataAddr, int flags = 0)
     {
-        if (!device) {
+        if (!device)
             throw failure("readRegister failed: device not initialized");
-        }
+
         std::string ret;
         ret.resize(64);
         uint64_t rlen = 0;
@@ -81,27 +79,21 @@ struct HPMPluginInstance {
         return ret;
     }
 
-    void writeRegister(uint64_t chipAddr, uint8_t dataAddr, std::string value)
-    {
-        if (!device) {
-            throw failure("writeRegister failed: device not initialized");
-        }
-        IOReturn x = (*device)->Write(device, chipAddr, dataAddr, &value[0], value.length(), 0);
-        if (x != 0)
-            throw failure("writeRegister failed");
-    }
-
     int command(uint64_t chipAddr, uint32_t cmd, std::string args = "")
     {
-        if (!device) {
+        if (!device)
             throw failure("command failed: device not initialized");
-        }
+
         if (args.length())
             (*device)->Write(device, chipAddr, 9, args.data(), args.length(), 0);
+
         auto ret = (*device)->Command(device, chipAddr, cmd, 0);
         if (ret)
             return -1;
+
         auto res = this->readRegister(chipAddr, 9);
+        if (res.empty())
+            return -1; // guard: device returned zero bytes
         return res[0] & 0xfu;
     }
 };
@@ -114,18 +106,14 @@ uint32_t GetUnlockKey()
 
     // IOServiceGetMatchingService always consumes `matching` — do NOT CFRelease it afterward.
     io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, matching);
-    if (!service) {
+    if (!service)
         throw failure("IOServiceGetMatchingService failed (IOPED)");
-    }
 
     IOObjectDeleter deviceDel(service);
 
     io_name_t deviceName;
-    if (IORegistryEntryGetName(service, deviceName) != kIOReturnSuccess) {
+    if (IORegistryEntryGetName(service, deviceName) != kIOReturnSuccess)
         throw failure("IORegistryEntryGetName failed (IOPED)");
-    }
-
-    printf("Mac type: %s\n", deviceName);
 
     return ((uint8_t)deviceName[0] << 24) | ((uint8_t)deviceName[1] << 16) |
            ((uint8_t)deviceName[2] << 8)  |  (uint8_t)deviceName[3];
@@ -136,8 +124,6 @@ std::vector<std::unique_ptr<HPMPluginInstance>> FindDevices()
     std::vector<std::unique_ptr<HPMPluginInstance>> devices;
     const int MAX_RETRIES = 5;
     const int RETRY_DELAY_MS = 1000;
-
-    printf("Looking for HPM devices...\n");
 
     for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
         // IOServiceGetMatchingServices consumes the dictionary, so recreate it each iteration.
@@ -150,7 +136,7 @@ std::vector<std::unique_ptr<HPMPluginInstance>> FindDevices()
             // matching already consumed by IOServiceGetMatchingServices — do NOT CFRelease it.
             throw failure("IOServiceGetMatchingServices failed");
         }
-        // matching has been consumed by IOServiceGetMatchingServices — do NOT CFRelease it.
+        // matching has been consumed — do NOT CFRelease it.
 
         IOObjectDeleter iterDel(iter);
 
@@ -159,67 +145,45 @@ std::vector<std::unique_ptr<HPMPluginInstance>> FindDevices()
             IOObjectDeleter deviceDel(device);
             io_string_t pathName;
 
-            if (IORegistryEntryGetPath(device, kIOServicePlane, pathName) != kIOReturnSuccess) {
+            if (IORegistryEntryGetPath(device, kIOServicePlane, pathName) != kIOReturnSuccess)
                 continue;
-            }
-
-            printf("Found: %s\n", pathName);
 
             try {
                 auto instance = std::make_unique<HPMPluginInstance>(device);
-
-                // Give device time to initialize
-                usleep(RETRY_DELAY_MS * 1000);
-
-                auto status = instance->readRegister(0, 0x3f);
-                printf("Device status: 0x%02x\n", status[0]);
-
-                // Accept all HPM devices, not just those with active connections
-                printf("Found HPM device\n");
+                usleep(RETRY_DELAY_MS * 1000); // give device time to initialize
                 devices.push_back(std::move(instance));
-
-            } catch (const failure& e) {
-                printf("Error initializing device: %s\n", e.what());
+            } catch (const failure&) {
+                // Skip devices that fail to initialize
             }
         }
 
-        if (!devices.empty()) {
+        if (!devices.empty())
             return devices;
-        }
 
-        printf("No suitable device found, waiting before retry...\n");
         usleep(RETRY_DELAY_MS * 1000);
     }
 
-    throw failure("No suitable devices found after multiple attempts.");
+    throw failure("No HPM devices found.");
 }
 
 void UnlockAce(HPMPluginInstance &inst, int no, uint32_t key)
 {
-    printf("Unlocking... ");
     std::stringstream args;
     put(args, key);
     if (inst.command(no, 'LOCK', args.str())) {
-        printf(" Failed.\n");
-        printf("Trying to reset... ");
-        if (inst.command(no, 'Gaid')) {
-            printf("Failed.\n");
+        // First attempt failed — try a reset then retry
+        if (inst.command(no, 'Gaid'))
             throw failure("Failed to unlock device");
-        }
-        printf("OK.\nUnlocking... ");
-        if (inst.command(no, 'LOCK', args.str())) {
-            printf(" Failed.\n");
+        if (inst.command(no, 'LOCK', args.str()))
             throw failure("Failed to unlock device");
-        }
     }
-
-    printf("OK\n");
 }
 
 void DoVDM(HPMPluginInstance &inst, int no, std::vector<uint32_t> vdm)
 {
-
     auto rs = inst.readRegister(no, 0x4d);
+    if (rs.empty())
+        throw failure("Failed to read VDM status register");
     uint8_t rxst = rs[0];
 
     std::stringstream args;
@@ -228,16 +192,17 @@ void DoVDM(HPMPluginInstance &inst, int no, std::vector<uint32_t> vdm)
         put(args, i);
 
     if (inst.command(no, 'VDMs', args.str()))
-        throw failure("Failed to send VDM\n");
+        throw failure("Failed to send VDM");
 
     int i;
     for (i = 0; i < 16; i++) {
+        usleep(10000); // 10ms between polls — avoid busy-wait
         rs = inst.readRegister(no, 0x4d);
-        if ((uint8_t)rs[0] != rxst)
+        if (!rs.empty() && (uint8_t)rs[0] != rxst)
             break;
     }
     if (i >= 16)
-        throw failure("Did not get a reply to VDM\n");
+        throw failure("No reply to VDM");
 
     uint32_t vdmhdr;
     std::stringstream reply;
@@ -245,87 +210,66 @@ void DoVDM(HPMPluginInstance &inst, int no, std::vector<uint32_t> vdm)
     get(reply, rxst);
     get(reply, vdmhdr);
 
-    if (vdmhdr != (vdm[0] | 0x40)) {
-        printf("VDM failed (reply: 0x%08x)\n", vdmhdr);
-        throw failure("VDM failed");
-    }
+    if (vdmhdr != (vdm[0] | 0x40))
+        throw failure("VDM reply header mismatch");
 }
 
-int DoDFU(HPMPluginInstance &inst, int no)
+void DoDFU(HPMPluginInstance &inst, int no)
 {
-    printf("Rebooting target into DFU mode... ");
-
     std::vector<uint32_t> dfu{0x5ac8012, 0x106, 0x80010000};
     DoVDM(inst, no, dfu);
-
-    printf("OK\n");
-    return 0;
 }
 
-int main2(int argc, char **argv)
+int main(int argc, char **argv)
 {
-    printf("Apple Silicon DFU Tool\n");
-    printf("This tool puts connected Apple Silicon devices into DFU mode.\n\n");
-
-    uint32_t key = GetUnlockKey();
+    printf("Apple Silicon DFU Tool\n\n");
 
     try {
+        uint32_t key = GetUnlockKey();
         auto devices = FindDevices();
+        int dfuCount = 0;
 
         for (auto& inst : devices) {
-            try {
-                for (int no = 0; no < 5; ++no) {
-                    printf("\n=== Port %d ===\n", no);
-
-                    // Read the port status
+            for (int no = 0; no < 5; ++no) {
+                try {
+                    // Skip ports with no active connection
                     auto t = inst->readRegister(no, 0x3f);
-                    std::string type = (t[0] & 1) ? ((t[0] & 2) == 0 ? "Source" : "Sink") : "None";
-                    printf("Connection: %s\n", type.c_str());
+                    if (t.empty() || !(t[0] & 1))
+                        continue;
 
-                    // Check status and enter DBMa mode if needed
+                    // Enter DBMa mode if not already in it
                     auto res = inst->readRegister(no, 0x03);
                     auto np = res.find('\0');
                     if (np != std::string::npos) res.erase(np);
-                    printf("Status: %s\n", res.c_str());
 
                     if (res != "DBMa") {
                         UnlockAce(*inst, no, key);
-                        printf("Entering DBMa mode... ");
-
                         if (inst->command(no, 'DBMa', "\x01"))
                             throw failure("Failed to enter DBMa mode");
 
                         res = inst->readRegister(no, 0x03);
                         auto np2 = res.find('\0');
                         if (np2 != std::string::npos) res.erase(np2);
-                        printf("Status: %s\n", res.c_str());
                         if (res != "DBMa")
                             throw failure("Failed to enter DBMa mode");
                     }
 
-                    // Perform DFU operation
                     DoDFU(*inst, no);
-                }
+                    printf("[Port %d] DFU triggered successfully.\n", no);
+                    dfuCount++;
 
-            } catch (const failure& e) {
-                printf("Error processing device: %s\n", e.what());
+                } catch (const failure& e) {
+                    printf("[Port %d] Failed: %s\n", no, e.what());
+                }
             }
         }
-    } catch (failure& e) {
-        printf("Error during device processing: %s\n", e.what());
+
+        printf("\nDone: %d port(s) put into DFU mode.\n", dfuCount);
+
+    } catch (const failure& e) {
+        printf("Error: %s\n", e.what());
         return -1;
     }
 
     return 0;
-}
-
-int main(int argc, char **argv)
-{
-    // This makes sure we call the HPMPluginInstance destructor.
-    try {
-        return main2(argc, argv);
-    } catch (failure e) {
-        printf("%s\n", e.what());
-        return -1;
-    }
 }
