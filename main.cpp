@@ -229,15 +229,13 @@ int main(int argc, char **argv)
         auto devices = FindDevices();
         int dfuCount = 0;
 
-        bool done = false;
-        for (auto& inst : devices) {
-            for (int no = 0; no < 4; ++no) {
-                try {
-                    // Skip ports with no active connection
-                    auto t = inst->readRegister(no, 0x3f);
-                    if (t.empty() || !(t[0] & 1))
-                        continue;
+        printf("Found %zu HPM chip(s).\n\n", devices.size());
 
+        for (size_t di = 0; di < devices.size(); ++di) {
+            auto& inst = devices[di];
+            for (int no = 0; no < 5; ++no) {
+                bool enteredDBMa = false;
+                try {
                     // Enter DBMa mode if not already in it
                     auto res = inst->readRegister(no, 0x03);
                     auto np = res.find('\0');
@@ -253,19 +251,23 @@ int main(int argc, char **argv)
                         if (np2 != std::string::npos) res.erase(np2);
                         if (res != "DBMa")
                             throw failure("Failed to enter DBMa mode");
+                        enteredDBMa = true;
                     }
 
                     DoDFU(*inst, no);
-                    printf("[Port %d] DFU triggered successfully.\n", no);
+                    printf("[Chip %zu Port %d] DFU triggered successfully.\n", di, no);
                     dfuCount++;
-                    done = true; // device is in DFU — no need to try remaining ports or chips
-                    break;
 
                 } catch (const failure& e) {
-                    printf("[Port %d] Failed: %s\n", no, e.what());
+                    printf("[Chip %zu Port %d] Failed: %s\n", di, no, e.what());
                 }
+
+                // Exit DBMa after each attempt to keep state clean for the next port
+                if (enteredDBMa)
+                    inst->command(no, 'DBMa', "\x00");
+
+                usleep(100000); // 100ms between port attempts
             }
-            if (done) break;
         }
 
         if (dfuCount > 0)
